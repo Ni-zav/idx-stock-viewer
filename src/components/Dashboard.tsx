@@ -34,6 +34,8 @@ export interface LivePriceData {
   direction: 'up' | 'down' | 'neutral';
   source: string;
   timestamp: number;
+  freshness?: 'recent' | 'stale' | 'closed';
+  observationAgeSeconds?: number | null;
 }
 
 interface DashboardProps {
@@ -235,7 +237,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const mergedData = useMemo(() => {
     return data.map(item => {
       const live = livePrices[item.t];
-      if (!live) return item;
+      if (!live || live.freshness === 'stale') return item;
       
       // Calculate updated daily change based on live price
       const newC1d = live.prevClose > 0 
@@ -416,7 +418,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                         <DashboardRow 
                             key={item.t}
                             item={item}
-                            hasLive={!!livePrices[item.t] && Date.now() - livePrices[item.t].timestamp < 600000}
+                            hasLive={livePrices[item.t]?.freshness === 'recent' && Date.now() - livePrices[item.t].timestamp < 900000}
                             flash={flashState[item.t] || null}
                             onSelect={onTickerSelect}
                             favorite={favoriteSet.has(item.t)}
