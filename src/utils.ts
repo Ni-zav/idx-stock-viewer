@@ -692,7 +692,6 @@ export function aggregateByTimeframe(
       case '2m':
       case '3m':
       case '4m':
-      case '5m':
       case '10m':
       case '15m':
       case '20m':
@@ -705,7 +704,6 @@ export function aggregateByTimeframe(
         break
       }
       // Intraday hour aggregations
-      case '1h':
       case '2h':
       case '3h':
       case '4h': {
