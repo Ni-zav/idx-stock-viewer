@@ -907,6 +907,15 @@ export const App: React.FC = () => {
         ) : (
           <>
             <div className="chart-main-container">
+              {selectedTicker && livePrices[selectedTicker] && (
+                <div className="quote-observation" role="status">
+                  Last price observation: {new Intl.DateTimeFormat('en-GB', {
+                    timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'medium'
+                  }).format(new Date(livePrices[selectedTicker].timestamp))} WIB
+                  {' · '}Source: {livePrices[selectedTicker].source}
+                  {' · '}Not guaranteed real-time
+                </div>
+              )}
               <div className={`chart-wrapper ${dataLoading ? 'loading' : ''}`}>
                 {error ? (
                   <div className="error">{error}</div>
@@ -927,6 +936,7 @@ export const App: React.FC = () => {
                       price: livePrices[selectedTicker].price,
                       high: livePrices[selectedTicker].high,
                       low: livePrices[selectedTicker].low,
+                      timestamp: livePrices[selectedTicker].timestamp,
                     } : undefined}
                   />
                 )}
