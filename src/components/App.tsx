@@ -9,7 +9,15 @@ import { Dashboard, LivePriceData } from './Dashboard'
 import { HelpModal } from './HelpModal'
 import { useWebSocket } from '../hooks/useWebSocket'
 
-const API_URL = 'http://localhost:3001'
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || `${window.location.protocol}//${window.location.hostname}:3001`
+const WS_URL = `${API_URL.replace(/^http/, 'ws')}/ws/stream`
+const jakartaDate = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit'
+})
+const getJakartaDay = (timestamp: number) => {
+  const parts = Object.fromEntries(jakartaDate.formatToParts(new Date(timestamp)).map(p => [p.type, p.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
 
 export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<'dashboard' | 'chart'>('dashboard')
@@ -73,7 +81,7 @@ export const App: React.FC = () => {
 
   // WebSocket connection
   const { connected: wsConnected, lastMessage, subscribe, unsubscribe } = useWebSocket({
-    url: 'ws://localhost:3001/ws/stream',
+    url: WS_URL,
     autoConnect: streamingEnabled
   })
 
@@ -147,12 +155,14 @@ export const App: React.FC = () => {
 
   // Sync visible tickers with streaming subscription
   useEffect(() => {
-    if (streamingEnabled && wsConnected && visibleTickers.length > 0) {
-      // Check if meaningfully changed (simple length check or first element check?)
-      // A deep compare is expensive, but typically visible tickers change only on sort/scroll or initial load.
-      // We will check if the set is identical.
+    if (!streamingEnabled || !wsConnected) {
+      // On reconnect, the server sees a new socket with no subscriptions.
+      prevVisibleTickersRef.current = [];
+      return;
+    }
+    if (visibleTickers.length > 0) {
       const prev = prevVisibleTickersRef.current;
-      const isDiff = prev.length !== visibleTickers.length || prev[0] !== visibleTickers[0] || prev[prev.length-1] !== visibleTickers[visibleTickers.length-1];
+      const isDiff = prev.length !== visibleTickers.length || prev.some((ticker, i) => ticker !== visibleTickers[i]);
       
       if (isDiff) {
          console.log(`[APP] Updating streaming subscription for ${visibleTickers.length} visible tickers`);
@@ -606,15 +616,17 @@ export const App: React.FC = () => {
     const data = [...rawData]
     const lastCandle = data[data.length - 1]
     
-    // Simple date comparison for daily data
-    // For intraday, we'd need more complex timestamp logic
-    const lastDate = new Date(lastCandle.date).toISOString().split('T')[0]
-    const today = new Date().toISOString().split('T')[0]
+    // Only represent an observation on the day it actually occurred.
+    // A quote from yesterday must never create a synthetic candle for today.
+    if (!Number.isFinite(live.timestamp)) return rawData
+    const lastDate = lastCandle.date.slice(0, 10)
+    const observedDay = getJakartaDay(live.timestamp)
+    if (observedDay < lastDate) return rawData
 
     // If live data exists, we essentially want to treat it as the current state of the market
     // For daily charts: Update today's candle if it exists, or append if it's a new day
     if (timeframe === '1D') {
-      if (lastDate === today) {
+      if (lastDate === observedDay) {
         // Update existing candle
         data[data.length - 1] = {
           ...lastCandle,
@@ -626,7 +638,7 @@ export const App: React.FC = () => {
       } else {
         // Append new day candle (approximate, since we might miss some open/low/high details)
         data.push({
-          date: new Date().toISOString().replace('T', ' ').split('.')[0], // Format: YYYY-MM-DD HH:mm:ss
+          date: observedDay, // Use actual IDX observation day, not current browser time
           ticker: selectedTicker,
           open: live.open || live.price,
           high: live.high || live.price,
@@ -733,6 +745,8 @@ export const App: React.FC = () => {
         console.log('[STREAM] Stopped streaming')
       }
     } catch (e) {
+      setStreamingEnabled(!enabled)
+      setError('Unable to change streaming state. Check the API server connection.')
       console.error('[STREAM] Error toggling streaming:', e)
     }
   }, [tickers, selectedTicker, timeframe, visibleTickers])
@@ -893,6 +907,15 @@ export const App: React.FC = () => {
         ) : (
           <>
             <div className="chart-main-container">
+              {selectedTicker && livePrices[selectedTicker] && (
+                <div className="quote-observation" role="status">
+                  Last price observation: {new Intl.DateTimeFormat('en-GB', {
+                    timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'medium'
+                  }).format(new Date(livePrices[selectedTicker].timestamp))} WIB
+                  {' · '}Source: {livePrices[selectedTicker].source}
+                  {' · '}Not guaranteed real-time
+                </div>
+              )}
               <div className={`chart-wrapper ${dataLoading ? 'loading' : ''}`}>
                 {error ? (
                   <div className="error">{error}</div>
@@ -913,6 +936,7 @@ export const App: React.FC = () => {
                       price: livePrices[selectedTicker].price,
                       high: livePrices[selectedTicker].high,
                       low: livePrices[selectedTicker].low,
+                      timestamp: livePrices[selectedTicker].timestamp,
                     } : undefined}
                   />
                 )}

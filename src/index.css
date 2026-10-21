@@ -1,3 +1,12 @@
+.quote-observation {
+  padding: 7px 12px;
+  font-size: 11px;
+  font-family: 'Roboto Mono', 'Courier New', monospace;
+  color: #a7a7a7;
+  background: #101010;
+  border-bottom: 1px solid #292929;
+}
+
 * {
   margin: 0;
   padding: 0;

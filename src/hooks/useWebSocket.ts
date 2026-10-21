@@ -55,13 +55,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectAttemptsRef = useRef(0)
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const shouldReconnectRef = useRef(true)
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
     if (wsRef.current?.readyState === WebSocket.CONNECTING) return
 
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
     setConnecting(true)
     shouldReconnectRef.current = true
 
@@ -70,6 +74,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       wsRef.current = ws
 
       ws.onopen = () => {
+        if (wsRef.current !== ws) return
         console.log('[WS] Connected to', url)
         setConnected(true)
         setConnecting(false)
@@ -77,6 +82,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       ws.onmessage = (event) => {
+        if (wsRef.current !== ws) return
         try {
           const data = JSON.parse(event.data) as StreamMessage
           setLastMessage(data)
@@ -86,6 +92,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       ws.onclose = () => {
+        if (wsRef.current !== ws) return
         console.log('[WS] Connection closed')
         setConnected(false)
         setConnecting(false)
@@ -105,7 +112,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
 
       ws.onerror = (error) => {
-        console.error('[WS] Error:', error)
+        if (wsRef.current === ws) console.error('[WS] Error:', error)
       }
     } catch (e) {
       console.error('[WS] Failed to connect:', e)

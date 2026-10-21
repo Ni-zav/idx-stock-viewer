@@ -171,22 +171,16 @@ export function getCachedTickerData(ticker: string): ChartData[] {
  * Both represent UTC times. We add WIB offset (+7h) for Jakarta display.
  */
 export function dateToTimestamp(dateString: string): number {
-  const JAKARTA_OFFSET_SECONDS = 7 * 60 * 60  // +7 hours
-  
-  let utcTimestamp: number
-  
-  // Check if already ISO format (has 'T' and 'Z')
-  if (dateString.includes('T') && dateString.includes('Z')) {
-    // Already ISO format from aggregation - parse directly
-    utcTimestamp = Math.floor(new Date(dateString).getTime() / 1000)
-  } else {
-    // CSV format: "2026-01-02 02:00:00" -> convert to ISO
-    const utcString = dateString.replace(' ', 'T') + 'Z'
-    utcTimestamp = Math.floor(new Date(utcString).getTime() / 1000)
+  const value = dateString.trim()
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    // A daily candle represents the exchange trading date (calendar day).
+    return Math.floor(Date.parse(value + 'T00:00:00Z') / 1000)
   }
-  
-  // Add WIB offset for correct display (02:00 UTC -> shows as 09:00)
-  return utcTimestamp + JAKARTA_OFFSET_SECONDS
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(value)) {
+    // Python stores intraday datetimes in UTC without a trailing Z.
+    return Math.floor(Date.parse(value.replace(' ', 'T') + 'Z') / 1000)
+  }
+  return Math.floor(Date.parse(value) / 1000)
 }
 
 export function formatDate(timestamp: number): string {
@@ -698,7 +692,6 @@ export function aggregateByTimeframe(
       case '2m':
       case '3m':
       case '4m':
-      case '5m':
       case '10m':
       case '15m':
       case '20m':
@@ -711,7 +704,6 @@ export function aggregateByTimeframe(
         break
       }
       // Intraday hour aggregations
-      case '1h':
       case '2h':
       case '3h':
       case '4h': {

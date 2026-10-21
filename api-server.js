@@ -11,12 +11,16 @@ import { dirname, join } from 'path';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
+import { getMarketState, getAdaptiveInterval as getMarketPollingInterval } from './lib/market-hours.js';
+import { normalizeTicker, normalizeTickers, normalizeInterval } from './lib/tickers.js';
+import { parseMarketTimestamp, jakartaTradingDate } from './lib/market-data.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-const PORT = 3001;
+const PORT = Number(process.env.PORT || 3001);
+const HOST = process.env.HOST || '127.0.0.1'; // Local-only by default: API can run data-modifying jobs.
 
 // Create HTTP server for both Express and WebSocket
 const server = createServer(app);
@@ -28,7 +32,18 @@ const wss = new WebSocketServer({ server, path: '/ws/stream' });
 let streamingEnabled = false;
 let streamingTickers = new Set();
 let streamingInterval = null;
+let streamingIntervalAdjuster = null;
+let isPriceFetchInProgress = false;
 let connectedClients = new Set();
+const clientSubscriptions = new Map(); // WebSocket -> this client's subscribed symbols
+let initialTickers = new Set(); // Used only until the first socket subscription arrives
+function refreshStreamingTickers() {
+  const union = new Set(initialTickers);
+  for (const tickers of clientSubscriptions.values()) {
+    for (const ticker of tickers) union.add(ticker);
+  }
+  streamingTickers = union;
+}
 let allTickers = [];
 let backgroundTickerIndex = 0;
 let lastFetchTimes = { '5m': 0, '1h': 0 };
@@ -41,33 +56,13 @@ let activeStreamingProcesses = new Set(); // Track spawned processes for cleanup
 const priceCache = new Map(); // ticker -> { price, timestamp, ...data }
 const PRICE_CACHE_TTL = 60000; // 1 minute TTL for cache entries
 
-// Helper: Check if currently in trading hours (IDX: 09:00-16:00 WIB, Mon-Fri)
+// Use the actual Jakarta date and regular continuous-trading sessions.
 function isInTradingHours() {
-  const now = new Date();
-  // Convert to WIB (UTC+7)
-  const wibHour = (now.getUTCHours() + 7) % 24;
-  const dayOfWeek = now.getUTCDay();
-  
-  // Weekend check (Saturday=6, Sunday=0)
-  if (dayOfWeek === 0 || dayOfWeek === 6) return false;
-  
-  // Trading hours: 09:00 - 16:00 WIB
-  return wibHour >= 9 && wibHour < 16;
+  return getMarketState().open;
 }
 
-// Helper: Get adaptive polling interval based on trading hours
 function getAdaptiveInterval() {
-  if (isInTradingHours()) {
-    return 5000; // 5 seconds during trading hours
-  }
-  const now = new Date();
-  const dayOfWeek = now.getUTCDay();
-  // Weekend: poll very infrequently
-  if (dayOfWeek === 0 || dayOfWeek === 6) {
-    return 300000; // 5 minutes on weekends
-  }
-  // Outside trading hours on weekday
-  return 30000; // 30 seconds
+  return getMarketPollingInterval();
 }
 
 // Helper: Update price cache and return if price changed
@@ -94,7 +89,7 @@ function loadAllTickers() {
     const lines = content.split('\n').slice(1); // skip header
     allTickers = lines
       .map(line => line.split(',')[0].trim().toUpperCase())
-      .filter(t => t && !t.startsWith('#'));
+      .filter(t => normalizeTicker(t) !== null);
     console.log(`[INFO] Loaded ${allTickers.length} tickers for background streaming`);
   } catch (e) {
     console.error('Failed to load tickers:', e);
@@ -135,7 +130,7 @@ async function getLastPrice(ticker) {
           
           const lastDateStr = lastVals[dateIdx];
           // Use Jakarta time for "today" to match IDX market time
-          const todayStr = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Jakarta' }).split(',')[0];
+          const todayStr = jakartaTradingDate();
           
           // If daily has today's date, then prevClose is the one before it
           if (lastDateStr.startsWith(todayStr)) {
@@ -187,7 +182,7 @@ async function getLastPrice(ticker) {
       // Parse date to timestamp for comparison
       // Intraday format often: YYYY-MM-DD HH:MM:SS or similar
       // Daily format: YYYY-MM-DD
-      const timestamp = new Date(dateStr).getTime();
+      const timestamp = parseMarketTimestamp(dateStr);
       
       if (isNaN(timestamp)) continue;
 
@@ -245,8 +240,14 @@ async function getLastPrice(ticker) {
 }
 
 // Middleware
-app.use(cors());
-app.use(express.json());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || /^http:\/\/(localhost|127\.0\.0\.1):5173$/.test(origin) ||
+        origin === process.env.CORS_ORIGIN) return callback(null, true);
+    callback(new Error('Origin not allowed'));
+  }
+}));
+app.use(express.json({ limit: '32kb' }));
 
 // Serve static files from public directory
 app.use(express.static(join(__dirname, 'public')));
@@ -345,6 +346,7 @@ function runPythonScript(args = []) {
 wss.on('connection', (ws) => {
   console.log('[WS] Client connected');
   connectedClients.add(ws);
+  clientSubscriptions.set(ws, new Set());
   
   // Send current streaming status
   ws.send(JSON.stringify({
@@ -358,20 +360,26 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(message);
       console.log('[WS] Received:', data);
       
+      const subscribed = clientSubscriptions.get(ws);
+      if (!subscribed) return;
       if (data.type === 'subscribe') {
-        // Add tickers to streaming set
-        if (data.tickers && Array.isArray(data.tickers)) {
-          data.tickers.forEach(t => streamingTickers.add(t.toUpperCase()));
-          console.log(`[WS] Subscribed to: ${data.tickers.join(', ')}`);
+        const tickers = normalizeTickers(data.tickers);
+        if (tickers === null) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid ticker list' }));
+          return;
         }
+        initialTickers.clear();
+        tickers.forEach(ticker => subscribed.add(ticker));
+        refreshStreamingTickers();
       } else if (data.type === 'unsubscribe') {
-        // Remove tickers from streaming set
-        if (data.tickers && Array.isArray(data.tickers)) {
-          data.tickers.forEach(t => streamingTickers.delete(t.toUpperCase()));
+        if (data.tickers === undefined) {
+          subscribed.clear();
         } else {
-          // Unsubscribe all
-          streamingTickers.clear();
+          const tickers = normalizeTickers(data.tickers);
+          if (tickers === null) return;
+          tickers.forEach(ticker => subscribed.delete(ticker));
         }
+        refreshStreamingTickers();
       }
     } catch (e) {
       console.error('[WS] Error parsing message:', e);
@@ -381,6 +389,8 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('[WS] Client disconnected');
     connectedClients.delete(ws);
+    clientSubscriptions.delete(ws);
+    refreshStreamingTickers();
   });
 });
 
@@ -447,7 +457,9 @@ async function broadcastPriceUpdates(tickerSet, currentSession) {
 
 // Fetch and broadcast live prices (called by streaming interval)
 async function fetchAndBroadcastPrices() {
-  if (!streamingEnabled) return;
+  if (!streamingEnabled || isPriceFetchInProgress) return;
+  isPriceFetchInProgress = true;
+  try {
   if (streamingTickers.size === 0 && allTickers.length === 0) return;
   
   // Capture current session ID to detect if streaming was stopped during execution
@@ -604,8 +616,10 @@ async function fetchAndBroadcastPrices() {
       }
     }
   }
+  } finally {
+    isPriceFetchInProgress = false;
+  }
 }
-
 // API: Get streaming status
 app.get('/api/streaming/status', (req, res) => {
   res.json({
@@ -621,9 +635,12 @@ app.get('/api/streaming/status', (req, res) => {
 app.get('/api/prices', (req, res) => {
   const { tickers } = req.query;
   
-  if (tickers) {
-    // Return specific tickers
-    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
+  if (tickers !== undefined) {
+    if (typeof tickers !== 'string') {
+      return res.status(400).json({ error: 'Invalid tickers query' });
+    }
+    const tickerList = normalizeTickers(tickers.split(','));
+    if (tickerList === null) return res.status(400).json({ error: 'Invalid IDX tickers' });
     const prices = {};
     for (const ticker of tickerList) {
       const cached = priceCache.get(ticker);
@@ -641,11 +658,13 @@ app.get('/api/prices', (req, res) => {
 
 // API: Start streaming
 app.post('/api/streaming/start', (req, res) => {
-  const { tickers = [], intervalMs = 10000 } = req.body;
-  
-  if (tickers.length > 0) {
-    tickers.forEach(t => streamingTickers.add(t.toUpperCase()));
+  const tickers = normalizeTickers(req.body?.tickers ?? []);
+  const intervalMs = normalizeInterval(req.body?.intervalMs ?? 10000);
+  if (tickers === null || intervalMs === null) {
+    return res.status(400).json({ error: 'Expected up to 100 four-letter IDX symbols and intervalMs from 5000 to 300000' });
   }
+  initialTickers = new Set(tickers);
+  refreshStreamingTickers();
   
   if (!streamingEnabled) {
     streamingEnabled = true;
@@ -659,9 +678,10 @@ app.post('/api/streaming/start', (req, res) => {
     streamingInterval = setInterval(fetchAndBroadcastPrices, actualInterval);
     
     // Also set up interval adjustment every 5 minutes to adapt to trading hours changes
-    const intervalAdjuster = setInterval(() => {
+    streamingIntervalAdjuster = setInterval(() => {
       if (!streamingEnabled) {
-        clearInterval(intervalAdjuster);
+        clearInterval(streamingIntervalAdjuster);
+        streamingIntervalAdjuster = null;
         return;
       }
       const newInterval = getAdaptiveInterval();
@@ -702,7 +722,14 @@ app.post('/api/streaming/stop', (req, res) => {
     clearInterval(streamingInterval);
     streamingInterval = null;
   }
-  
+  if (streamingIntervalAdjuster) {
+    clearInterval(streamingIntervalAdjuster);
+    streamingIntervalAdjuster = null;
+  }
+  initialTickers.clear();
+  for (const subscribed of clientSubscriptions.values()) subscribed.clear();
+  refreshStreamingTickers();
+
   // Kill all active streaming processes
   if (activeStreamingProcesses.size > 0) {
     console.log(`[STREAM] Killing ${activeStreamingProcesses.size} active streaming processes...`);
@@ -723,8 +750,12 @@ app.post('/api/streaming/stop', (req, res) => {
 
 // API: Fetch intraday data manually
 app.post('/api/intraday/fetch', async (req, res) => {
-  const { tickers = [], interval = '1m' } = req.body;
-  
+  const tickers = normalizeTickers(req.body?.tickers);
+  const interval = req.body?.interval ?? '1m';
+  if (tickers === null || !['1m', '5m', '30m', '1h'].includes(interval)) {
+    return res.status(400).json({ error: 'Invalid tickers or interval' });
+  }
+
   if (tickers.length === 0) {
     return res.status(400).json({ error: 'No tickers specified' });
   }
@@ -741,8 +772,11 @@ app.post('/api/intraday/fetch', async (req, res) => {
 
 // API: Run data cleanup
 app.post('/api/data/cleanup', async (req, res) => {
-  const { dryRun = false, aggregate = false, ticker = null } = req.body;
-  
+  const { dryRun = false, aggregate = false, ticker = null } = req.body ?? {};
+  if (ticker !== null && normalizeTicker(ticker) === null) {
+    return res.status(400).json({ error: 'Invalid IDX ticker' });
+  }
+
   try {
     const args = ['--json'];
     if (dryRun) args.push('--dry-run');
@@ -764,6 +798,9 @@ app.post('/api/data/cleanup', async (req, res) => {
 app.get('/api/status', async (req, res) => {
   try {
     const ticker = req.query.ticker;
+    if (ticker !== undefined && normalizeTicker(ticker) === null) {
+      return res.status(400).json({ error: 'Invalid IDX ticker' });
+    }
     const args = ['--check', '--json'];
     if (ticker) args.unshift(ticker);
 
@@ -785,8 +822,11 @@ app.post('/api/update', async (req, res) => {
     });
   }
 
-  const { ticker } = req.body;
-  
+  const { ticker } = req.body ?? {};
+  if (ticker !== undefined && normalizeTicker(ticker) === null) {
+    return res.status(400).json({ error: 'Invalid IDX ticker' });
+  }
+
   updateInProgress = true;
   updateOutput = [];
   updateStatus = 'running';
@@ -834,6 +874,7 @@ app.get('/api/update/progress', (req, res) => {
 
 // API: Get last date for a ticker
 app.get('/api/ticker/:ticker/last-date', async (req, res) => {
+  if (!normalizeTicker(req.params.ticker)) return res.status(400).json({ error: 'Invalid IDX ticker' });
   try {
     const args = [req.params.ticker, '--check', '--json'];
     const { output } = await runPythonScript(args);
@@ -846,6 +887,7 @@ app.get('/api/ticker/:ticker/last-date', async (req, res) => {
 
 // API: Smart check - check if a ticker needs updating
 app.get('/api/smart-check/:ticker', async (req, res) => {
+  if (!normalizeTicker(req.params.ticker)) return res.status(400).json({ error: 'Invalid IDX ticker' });
   try {
     const args = [req.params.ticker, '--check', '--json'];
     const { output } = await runScript('smart_update.py', args);
@@ -866,8 +908,13 @@ app.post('/api/smart-update', async (req, res) => {
     });
   }
 
-  const { ticker, priorityOnly = false, maxUpdates = null } = req.body;
-  
+  const { ticker, priorityOnly = false, maxUpdates = null } = req.body ?? {};
+  if ((ticker && normalizeTicker(ticker) === null) ||
+      (maxUpdates !== null && (!Number.isInteger(maxUpdates) || maxUpdates < 1 || maxUpdates > 1000)) ||
+      typeof priorityOnly !== 'boolean') {
+    return res.status(400).json({ error: 'Invalid smart update arguments' });
+  }
+
   updateInProgress = true;
   updateOutput = [];
   updateStatus = 'running';
@@ -998,7 +1045,7 @@ app.get('/', (req, res) => {
 });
 
 // Use server.listen instead of app.listen with WebSocket
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   console.log(`API server running at http://localhost:${PORT}`);
   console.log(`WebSocket endpoint: ws://localhost:${PORT}/ws/stream`);
   console.log('');
