@@ -14,6 +14,7 @@ import fs from 'fs';
 import { getMarketState, getAdaptiveInterval as getMarketPollingInterval } from './lib/market-hours.js';
 import { normalizeTicker, normalizeTickers, normalizeInterval } from './lib/tickers.js';
 import { parseMarketTimestamp, jakartaTradingDate } from './lib/market-data.js';
+import { readCsvTail } from './lib/csv-tail.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -26,7 +27,7 @@ const HOST = process.env.HOST || '127.0.0.1'; // Local-only by default: API can 
 const server = createServer(app);
 
 // WebSocket server
-const wss = new WebSocketServer({ server, path: '/ws/stream' });
+const wss = new WebSocketServer({ server, path: '/ws/stream', maxPayload: 16 * 1024, perMessageDeflate: false });
 
 // Streaming state
 let streamingEnabled = false;
@@ -68,7 +69,9 @@ function getAdaptiveInterval() {
 // Helper: Update price cache and return if price changed
 function updatePriceCache(ticker, data) {
   const existing = priceCache.get(ticker);
-  const priceChanged = !existing || existing.price !== data.price;
+  const priceChanged = !existing || [
+    'price', 'open', 'high', 'low', 'volume', 'prevClose', 'timestamp', 'source'
+  ].some(field => existing[field] !== data[field]);
   priceCache.set(ticker, { ...data, cachedAt: Date.now() });
   return priceChanged;
 }
@@ -113,20 +116,14 @@ async function getLastPrice(ticker) {
   try {
     const dailyPath = join(__dirname, `public/data/tickers/${ticker}.csv`);
     if (fs.existsSync(dailyPath)) {
-      const content = fs.readFileSync(dailyPath, 'utf8');
-      const lines = content.trim().split('\n');
-      if (lines.length >= 2) {
-        const headers = lines[0].split(',').map(h => h.trim());
+      const { headers, rows } = readCsvTail(dailyPath, 2);
+      if (rows.length >= 1) {
         const closeIdx = headers.indexOf('Close');
         const dateIdx = headers.indexOf('Date');
         
         if (closeIdx !== -1 && dateIdx !== -1) {
-          // Check last line
-          const lastLine = lines[lines.length - 1];
-          const lastVals = lastLine.split(',');
-          // Check second to last line
-          const prevLine = lines[lines.length - 2];
-          const prevVals = prevLine.split(',');
+          const lastVals = rows[rows.length - 1];
+          const prevVals = rows.length > 1 ? rows[rows.length - 2] : null;
           
           const lastDateStr = lastVals[dateIdx];
           // Use Jakarta time for "today" to match IDX market time
@@ -134,7 +131,7 @@ async function getLastPrice(ticker) {
           
           // If daily has today's date, then prevClose is the one before it
           if (lastDateStr.startsWith(todayStr)) {
-             prevClose = parseFloat(prevVals[closeIdx]);
+             prevClose = prevVals ? parseFloat(prevVals[closeIdx]) : null;
           } else {
              // If daily is old (yesterday), then THAT is the prevClose for today
              prevClose = parseFloat(lastVals[closeIdx]);
@@ -156,12 +153,10 @@ async function getLastPrice(ticker) {
       const fullPath = join(__dirname, path);
       if (!fs.existsSync(fullPath)) continue;
       
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const lines = content.trim().split('\n');
-      if (lines.length < 2) continue;
-      
+      const { headers, rows } = readCsvTail(fullPath, 1);
+      if (rows.length === 0) continue;
+
       // Parse header
-      const headers = lines[0].split(',').map(h => h.trim());
       const closeIdx = headers.indexOf('Close');
       const openIdx = headers.indexOf('Open');
       const highIdx = headers.indexOf('High');
@@ -172,8 +167,7 @@ async function getLastPrice(ticker) {
       if (closeIdx === -1) continue;
       
       // Get last data row
-      const lastLine = lines[lines.length - 1];
-      const values = lastLine.split(',');
+      const values = rows[rows.length - 1];
       
       const close = parseFloat(values[closeIdx]);
       if (isNaN(close) || close <= 0) continue;
@@ -273,6 +267,10 @@ let updateStatus = 'idle';
  */
 function runScript(scriptName, args = [], options = {}) {
   return new Promise((resolve, reject) => {
+    // All callers pass known server-side script filenames, never user-supplied paths.
+    const MAX_STDOUT_BYTES = 5 * 1024 * 1024;
+    let stdoutBytes = 0;
+    let stdoutOverflow = false;
     const scriptPath = join(__dirname, scriptName);
     const pythonCmd = process.platform === 'win32' 
       ? join(__dirname, '.venv', 'Scripts', 'python.exe')
@@ -280,7 +278,8 @@ function runScript(scriptName, args = [], options = {}) {
 
     const python = spawn(pythonCmd, [scriptPath, ...args], {
       cwd: __dirname,
-      shell: false
+      shell: false,
+      timeout: options.timeoutMs ?? 180000,
     });
 
     // Track streaming processes for cleanup
@@ -292,26 +291,35 @@ function runScript(scriptName, args = [], options = {}) {
     let error = '';
 
     python.stdout.on('data', (data) => {
+      stdoutBytes += data.length;
+      if (stdoutBytes > MAX_STDOUT_BYTES) {
+        stdoutOverflow = true;
+        python.kill();
+        return;
+      }
       const text = data.toString();
       output.push(text);
-      if (updateInProgress) updateOutput.push(text);
+      if (updateInProgress) updateOutput.push(text.slice(0, 2000));
       if (!options.silent) console.log(text);
     });
 
     python.stderr.on('data', (data) => {
       const text = data.toString();
-      error += text;
-      if (updateInProgress) updateOutput.push(`[ERROR] ${text}`);
+      error = (error + text).slice(-65536);
+      if (updateInProgress) updateOutput.push(`[ERROR] ${text.slice(0, 2000)}`);
       console.error(text);
     });
 
     python.on('close', (code) => {
+      if (updateOutput.length > 1000) updateOutput.splice(0, updateOutput.length - 1000);
       // Remove from tracking set
       if (options.isStreamingProcess) {
         activeStreamingProcesses.delete(python);
       }
       
-      if (code === 0) {
+      if (stdoutOverflow) {
+        reject(new Error('Python data job produced more than 5 MiB of output'));
+      } else if (code === 0) {
         resolve({ success: true, output: output.join('') });
       } else {
         // Don't reject if killed (code null) - this is expected when streaming stops
@@ -620,6 +628,24 @@ async function fetchAndBroadcastPrices() {
     isPriceFetchInProgress = false;
   }
 }
+// Lightweight operational diagnostics; excludes private filesystem paths.
+app.get('/api/health', (_req, res) => {
+  const observations = Array.from(priceCache.values());
+  const latest = observations.reduce((value, quote) =>
+    Number.isFinite(quote.timestamp) ? Math.max(value, quote.timestamp) : value, 0);
+  res.json({
+    status: 'ok',
+    serverTime: new Date().toISOString(),
+    marketSessionOpen: isInTradingHours(),
+    streaming: streamingEnabled,
+    priceFetchInProgress: isPriceFetchInProgress,
+    updateStatus,
+    websocketClients: connectedClients.size,
+    cachedSymbols: priceCache.size,
+    latestObservationAt: latest ? new Date(latest).toISOString() : null,
+  });
+});
+
 // API: Get streaming status
 app.get('/api/streaming/status', (req, res) => {
   res.json({
