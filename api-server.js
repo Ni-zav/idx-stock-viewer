@@ -15,6 +15,7 @@ import { getMarketState, getAdaptiveInterval as getMarketPollingInterval } from 
 import { normalizeTicker, normalizeTickers, normalizeInterval } from './lib/tickers.js';
 import { parseMarketTimestamp, jakartaTradingDate } from './lib/market-data.js';
 import { readCsvTail } from './lib/csv-tail.js';
+import { quoteFreshness } from './lib/quote-freshness.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -439,6 +440,7 @@ async function broadcastPriceUpdates(tickerSet, currentSession) {
         direction,
         source: priceData.source,
         timestamp: priceData.timestamp,
+        ...quoteFreshness(priceData.timestamp),
       };
       
       // Check if price actually changed (differential update)
@@ -590,6 +592,7 @@ async function fetchAndBroadcastPrices() {
         direction,
         source: priceData.source,
         timestamp: priceData.timestamp,
+        ...quoteFreshness(priceData.timestamp),
       };
       
       batchedPrices[ticker] = priceUpdate;
@@ -637,6 +640,7 @@ app.get('/api/health', (_req, res) => {
     status: 'ok',
     serverTime: new Date().toISOString(),
     marketSessionOpen: isInTradingHours(),
+    marketState: getMarketState(),
     streaming: streamingEnabled,
     priceFetchInProgress: isPriceFetchInProgress,
     updateStatus,
@@ -653,6 +657,7 @@ app.get('/api/streaming/status', (req, res) => {
     tickers: Array.from(streamingTickers),
     clients: connectedClients.size,
     tradingHours: isInTradingHours(),
+    marketState: getMarketState(),
     currentInterval: getAdaptiveInterval()
   });
 });
@@ -671,13 +676,14 @@ app.get('/api/prices', (req, res) => {
     for (const ticker of tickerList) {
       const cached = priceCache.get(ticker);
       if (cached) {
-        prices[ticker] = cached;
+        prices[ticker] = { ...cached, ...quoteFreshness(cached.timestamp) };
       }
     }
     res.json({ prices, count: Object.keys(prices).length, cached: true });
   } else {
     // Return all cached prices
-    const prices = Object.fromEntries(priceCache);
+    const prices = Object.fromEntries(Array.from(priceCache, ([ticker, cached]) =>
+      [ticker, { ...cached, ...quoteFreshness(cached.timestamp) }]));
     res.json({ prices, count: priceCache.size, cached: true });
   }
 });
