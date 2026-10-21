@@ -6,7 +6,7 @@ A local-first React + Express + Python viewer for Indonesian stock-market price 
 
 ## Quick start
 
-Requires **Node.js 22+** and **Python 3.10+**.
+Requires **Node.js 22.12+ (Vite 8)** and **Python 3.10+**.
 
 ```bash
 npm ci
