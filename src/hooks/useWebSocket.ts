@@ -25,6 +25,7 @@ export interface StreamMessage {
 
 export interface UseWebSocketOptions {
   url: string
+  token?: string
   autoConnect?: boolean
   reconnectDelay?: number
   maxReconnectAttempts?: number
@@ -44,6 +45,7 @@ export interface UseWebSocketReturn {
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const {
     url,
+    token = '',
     autoConnect = true,
     reconnectDelay = 3000,
     maxReconnectAttempts = 5
@@ -70,7 +72,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     shouldReconnectRef.current = true
 
     try {
-      const ws = new WebSocket(url)
+      const ws = new WebSocket(url, token ? ['idx-v1', `idx-auth-${token}`] : undefined)
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -118,7 +120,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       console.error('[WS] Failed to connect:', e)
       setConnecting(false)
     }
-  }, [url, reconnectDelay, maxReconnectAttempts])
+  }, [url, token, reconnectDelay, maxReconnectAttempts])
 
   const disconnect = useCallback(() => {
     shouldReconnectRef.current = false
