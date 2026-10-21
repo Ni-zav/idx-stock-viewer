@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useCallback } from 'react'
-import { createChart, ColorType, IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, CandlestickData, HistogramData } from 'lightweight-charts'
+import React, { useEffect, useRef, useCallback, useState } from 'react'
+import { createChart, ColorType, IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, CandlestickData, HistogramData, LineData } from 'lightweight-charts'
 import { CandleData, VolumeData } from '../types'
+import { simpleMovingAverage } from '../../lib/indicators.js'
 
 interface LivePriceUpdate {
   price: number;
@@ -17,6 +18,10 @@ interface ChartComponentProps {
 }
 
 export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volumeData, showGaps = false, livePrice }) => {
+  const [showSma20, setShowSma20] = useState(false)
+  const [showSma50, setShowSma50] = useState(false)
+  const sma20SeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const sma50SeriesRef = useRef<ISeriesApi<'Line'> | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
@@ -106,6 +111,8 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     })
 
     seriesRef.current = candlestickSeries
+    sma20SeriesRef.current = chart.addLineSeries({ color: '#ffbd00', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, visible: false })
+    sma50SeriesRef.current = chart.addLineSeries({ color: '#4bb8d8', lineWidth: 2, priceLineVisible: false, lastValueVisible: false, visible: false })
 
     const volumeSeries = chart.addHistogramSeries({
       color: 'rgba(0, 212, 255, 0.4)', // Accent blue for volume
@@ -231,6 +238,8 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     prevDataLengthRef.current = candleData.length
 
     seriesRef.current.setData(candleData as CandlestickData<UTCTimestamp>[])
+    sma20SeriesRef.current?.setData(simpleMovingAverage(candleData, 20) as LineData<UTCTimestamp>[])
+    sma50SeriesRef.current?.setData(simpleMovingAverage(candleData, 50) as LineData<UTCTimestamp>[])
     
     // Store last candle for live updates
     lastCandleRef.current = candleData[candleData.length - 1]
@@ -251,6 +260,11 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     }
   }, [candleData, volumeData])
   
+  useEffect(() => {
+    sma20SeriesRef.current?.applyOptions({ visible: showSma20 })
+    sma50SeriesRef.current?.applyOptions({ visible: showSma50 })
+  }, [showSma20, showSma50])
+
   // Live price update - update last candle in real-time
   useEffect(() => {
     if (!seriesRef.current || !livePrice || !lastCandleRef.current) return
@@ -289,6 +303,12 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
   return (
     <div className="chart-wrapper" ref={containerRef}>
       <div className="chart-tooltip" ref={tooltipRef} />
+      <div className="indicator-controls" aria-label="Chart moving averages">
+        <label><input type="checkbox" checked={showSma20}
+          onChange={event => setShowSma20(event.target.checked)} /> SMA 20</label>
+        <label><input type="checkbox" checked={showSma50}
+          onChange={event => setShowSma50(event.target.checked)} /> SMA 50</label>
+      </div>
     </div>
   )
 }
