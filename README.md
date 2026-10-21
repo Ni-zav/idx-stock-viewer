@@ -1,65 +1,52 @@
-# IDX Stock Viewer 📊
+# IDX Stock Viewer
 
-A professional, high-performance stock data viewer for the Indonesian Stock Exchange (IDX). Built with a "Bloomberg Terminal" aesthetic, it combines real-time streaming with deep historical analysis.
+A local-first React + Express + Python viewer for Indonesian stock-market price history, with candlestick charts, dashboard statistics, and optional Yahoo Finance polling.
 
-## 📖 Documentation
-Detailed guides are available in the `documentation/` folder:
-- [**🌟 Features**](./documentation/features.md): Detailed look at charting, streaming, and dashboarding.
-- [**🏗️ Architecture**](./documentation/architecture.md): System technical overview and data flow.
-- [**🐍 Scripts Guide**](./documentation/scripts.md): Reference for all Python automation scripts.
-- [**🌐 API Reference**](./documentation/api.md): Documentation for REST and WebSocket endpoints.
+> **Data notice:** This application uses third-party Yahoo Finance observations, not a licensed real-time IDX market feed. Prices may be delayed, stale, missing, or revised. The chart now shows the most recent quote's source and observation time when streaming data is available.
 
----
+## Quick start
 
-## 🚀 Key Features
+Requires **Node.js 22+** and **Python 3.10+**.
 
-- **📊 Bloomberg-Style Charts**: Candlestick charts with volume histograms via Lightweight Charts.
-- **🔴 Real-Time Streaming**: Live price updates via WebSocket with flash animations.
-- **⏱️ Granular Timeframes**: Support for 1m, 5m, 1h, Daily, Weekly, Monthly, and Custom (N-day) intervals.
-- **🔄 Smart Syncing**: One-click incremental updates from Yahoo Finance.
-- **🔍 Fast Dashboard**: Sortable overview of 900+ tickers with live price tracking.
-- **⚡ High Performance**: Split-file CSV architecture ensures <100ms load times.
-
-## 🛠️ Quick Start
-
-### 1. Prerequisites
-- **Node.js** 16+
-- **Python** 3.8+ (with `.venv` configured)
-- **Dependencies**: `pip install yfinance pandas`
-
-### 2. Installation
 ```bash
-# Install Node dependencies
-npm install
-```
-
-### 3. Run the App
-```bash
-# Start both Frontend and API Server
+npm ci
+python -m venv .venv
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python scripts/bootstrap.py --tickers BBCA BBRI BMRI TLKM
 npm start
 ```
-- **Frontend**: `http://localhost:5173`
-- **API Server**: `http://localhost:3001`
 
-## 📦 Data Management
+Open **http://localhost:5173** for the UI; the API listens on **http://127.0.0.1:3001**. The initial bootstrap downloads selected tickers from Yahoo Finance, then generates the dashboard JSON. Internet access and functioning Yahoo endpoints are required. If no data was downloaded, bootstrap exits with a clear error.
 
-The system uses a highly optimized **per-ticker CSV storage** strategy:
+The `public/data/` directory contains locally generated prices, tickers, and dashboard artifacts and is intentionally untracked. A fresh checkout needs the bootstrap step; it is **not** shipped with the full IDX universe. Expand your tickers using `python fetch_tickers.py --add BBCA BBRI` followed by `python update_data.py` and `python generate_dashboard.py`.
 
-- `public/data/idx_tickers.csv`: Ticker registry.
-- `public/data/tickers/`: Historical daily data (AALI.csv, BBCA.csv, etc.).
-- `public/data/intraday/`: Multi-interval intraday data (1m, 5m, 1h).
+## Development
 
-If you have a large monolithic CSV, split it using:
 ```bash
-python split_tickers.py
+npm test                    # Node regression tests: sessions, validation, timestamps
+npm run build               # TypeScript checks + Vite build
+npm run dev                 # Frontend only
+npm run server              # API only
 ```
 
-## RED LATEST Updates (v1.1)
-- **Bug Fix**: Improved streaming toggle logic to immediately kill stale Python processes and invalidate old sessions.
-- **Documentation**: Comprehensive new documentation suite added to the `documentation/` directory.
-- **Gap Filling**: New toggle to visualize or hide non-trading gaps in charts.
+The API binds to loopback by default to avoid exposing scripts that modify local data. To opt in to remote access, set `HOST` and `CORS_ORIGIN` explicitly and add appropriate access controls **before** exposing the API outside a trusted network. Set frontend `VITE_API_URL` during build to point at that API. Exposing the server on the public internet without authentication is **not supported**.
 
----
+Polling uses regular IDX continuous-trading sessions in the **Asia/Jakarta** timezone (Monday–Thursday 09:00–12:00 and 13:30–15:50; Friday 09:00–11:30 and 14:00–15:50). Pre/post-market auction phases and exchange holidays are not currently modeled. Check the [official IDX trading-hours page](https://www.idx.id/en/products-services/trading-hours-and-mechanism/) for the current schedule.
 
-**Built with ❤️ for Indonesian stock market analysis**
+## Architecture
 
+- **React + Vite:** candlesticks (Lightweight Charts), dashboard, intraday timeframes.
+- **Express + WebSocket:** cache, streaming subscriptions, on-demand refresh.
+- **Python + yfinance/pandas:** ticker downloads and local per-symbol CSV storage.
+- **Source timestamp:** quotes include the original observation time, rather than falsely labeling each poll as a new live trade.
+
+Additional documentation: [Features](documentation/features.md), [Architecture](documentation/architecture.md), [API](documentation/api.md), [Scripts](documentation/scripts.md).
+
+## Limitations and next improvements
+
+- Add exchange holiday calendar and source/provider freshness checks.
+- Improve data ingestion validation, adjustments for stock splits, and corporate actions.
+- Separate streaming workers from request-serving processes and persist cache metadata.
+- End-to-end test actual market data and chart rendering.
+- Add an authentication layer before offering a hosted multi-user version.
