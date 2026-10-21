@@ -9,7 +9,8 @@ import { Dashboard, LivePriceData } from './Dashboard'
 import { HelpModal } from './HelpModal'
 import { useWebSocket } from '../hooks/useWebSocket'
 
-const API_URL = 'http://localhost:3001'
+const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || `${window.location.protocol}//${window.location.hostname}:3001`
+const WS_URL = `${API_URL.replace(/^http/, 'ws')}/ws/stream`
 
 export const App: React.FC = () => {
   const [currentView, setCurrentView] = useState<'dashboard' | 'chart'>('dashboard')
@@ -73,7 +74,7 @@ export const App: React.FC = () => {
 
   // WebSocket connection
   const { connected: wsConnected, lastMessage, subscribe, unsubscribe } = useWebSocket({
-    url: 'ws://localhost:3001/ws/stream',
+    url: WS_URL,
     autoConnect: streamingEnabled
   })
 
@@ -147,12 +148,14 @@ export const App: React.FC = () => {
 
   // Sync visible tickers with streaming subscription
   useEffect(() => {
-    if (streamingEnabled && wsConnected && visibleTickers.length > 0) {
-      // Check if meaningfully changed (simple length check or first element check?)
-      // A deep compare is expensive, but typically visible tickers change only on sort/scroll or initial load.
-      // We will check if the set is identical.
+    if (!streamingEnabled || !wsConnected) {
+      // On reconnect, the server sees a new socket with no subscriptions.
+      prevVisibleTickersRef.current = [];
+      return;
+    }
+    if (visibleTickers.length > 0) {
       const prev = prevVisibleTickersRef.current;
-      const isDiff = prev.length !== visibleTickers.length || prev[0] !== visibleTickers[0] || prev[prev.length-1] !== visibleTickers[visibleTickers.length-1];
+      const isDiff = prev.length !== visibleTickers.length || prev.some((ticker, i) => ticker !== visibleTickers[i]);
       
       if (isDiff) {
          console.log(`[APP] Updating streaming subscription for ${visibleTickers.length} visible tickers`);
@@ -733,6 +736,8 @@ export const App: React.FC = () => {
         console.log('[STREAM] Stopped streaming')
       }
     } catch (e) {
+      setStreamingEnabled(!enabled)
+      setError('Unable to change streaming state. Check the API server connection.')
       console.error('[STREAM] Error toggling streaming:', e)
     }
   }, [tickers, selectedTicker, timeframe, visibleTickers])
