@@ -229,7 +229,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
         let valB = b[sortField];
         
         // Handle array for sparkline (not sortable essentially, but prevents crash)
-        if (Array.isArray(valA)) return 0;
+        if (valA == null || valB == null) return valA == null && valB == null ? 0 : valA == null ? 1 : -1;
+        if (Array.isArray(valA) || Array.isArray(valB)) return 0;
         
         if (valA < valB) return sortDesc ? 1 : -1;
         if (valA > valB) return sortDesc ? -1 : 1;
