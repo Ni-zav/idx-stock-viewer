@@ -21,6 +21,7 @@ import json
 import argparse
 import logging
 from market_data import upsert_market_csv
+from market_calendar import latest_expected_exchange_date, JAKARTA
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
@@ -36,22 +37,9 @@ CSV_PATH = BASE_DIR / 'public' / 'data' / 'idx.csv'
 TICKERS_DIR = BASE_DIR / 'public' / 'data' / 'tickers'
 
 def get_last_trading_day() -> str:
-    """
-    Calculate the effective last trading day.
-    If today is weekend or today is weekday but before 9am, roll back.
-    """
-    now = datetime.now()
-    effective_day = now
-    
-    # If before 9AM, today's market hasn't opened, so effective data is yesterday
-    if now.hour < 9:
-        effective_day = now - timedelta(days=1)
-        
-    # Roll back if weekend
-    while effective_day.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
-        effective_day = effective_day - timedelta(days=1)
-        
-    return effective_day.strftime('%Y-%m-%d')
+    """Return expected IDX trading date, including published exchange closures."""
+    return latest_expected_exchange_date()
+
 
 def get_ticker_last_date(ticker: str) -> str | None:
     """Get the last date of data for a ticker from its individual file"""
@@ -213,7 +201,7 @@ def update_main_csv(new_rows: list[dict]):
 def update_ticker(ticker: str) -> dict:
     """Update a single ticker with latest data (Sequential/Legacy)"""
     last_date = get_ticker_last_date(ticker)
-    today = datetime.now()
+    today = datetime.now(JAKARTA)
     today_str = today.strftime('%Y-%m-%d')
     
     last_trading_day_str = get_last_trading_day()
@@ -269,7 +257,7 @@ def update_batch_tickers(tickers: list[str]) -> list[dict]:
     tickers_to_fetch = []
     ticker_last_dates = {} # Map ticker -> last_date
     
-    today = datetime.now()
+    today = datetime.now(JAKARTA)
     today_str = today.strftime('%Y-%m-%d')
     
     # Calculate last trading day

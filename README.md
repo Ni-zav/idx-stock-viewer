@@ -45,7 +45,8 @@ Additional documentation: [Features](documentation/features.md), [Architecture](
 
 ## Limitations and next improvements
 
-- Add exchange holiday calendar and source/provider freshness checks.
+- **2026 IDX holiday calendar:** the application uses published weekday exchange closures from IDX's Peng-00171/BEI.POP/09-2025 (see `config/idx-market-calendar.json`). The calendar includes 22 announced weekday closures and must be updated when the exchange publishes changes. Outside verified years, the API marks `calendarVerified: false` and applies a provisional weekdays-only schedule. Auctions are not modeled.
+- **Provider freshness:** Yahoo observations are marked `recent`, `stale`, or `closed` depending on source timestamp and Jakarta session. Even `recent` is **not proof of exchange real-time access**, licensed quote latency, or data correctness; source latency remains unknown.
 - Improve data ingestion validation, adjustments for stock splits, and corporate actions.
 - Separate streaming workers from request-serving processes and persist cache metadata.
 - End-to-end test actual market data and chart rendering.
