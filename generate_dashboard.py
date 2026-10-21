@@ -44,7 +44,10 @@ def get_intraday_data(ticker, daily_last_date_str):
                last_date_str = parts[0] # assuming Date is first col
                
                # If intraday date is definitely OLDER than daily date, skip pandas load
-               if last_date_str[:10] < daily_last_date_str[:10]:
+               # CSV timestamps are UTC. Convert to the local IDX date
+               # before comparing them with daily exchange-date candles.
+               last_local_date = pd.to_datetime(last_date_str, utc=True).tz_convert('Asia/Jakarta').strftime('%Y-%m-%d')
+               if last_local_date < daily_last_date_str[:10]:
                    return None
         except Exception:
             pass
