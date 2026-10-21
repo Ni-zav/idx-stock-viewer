@@ -67,6 +67,41 @@ python generate_dashboard.py
 
 This reconciliation is bounded (0–365 days) and does **not** promise complete historical corporate-action accuracy. Source adjusted factors can change retroactively.
 
+
+## Private remote access and worker limits
+
+The API binds to `127.0.0.1` by default. Binding `HOST` to a non-loopback
+interface **requires** `API_TOKEN` (24–128 URL-safe characters). Generate one
+using `openssl rand -hex 32` and configure the browser UI's **API ACCESS**
+panel to enter it. The token is retained in `sessionStorage`, not in the
+bundle, query string or localStorage. HTTP uses a bearer header; WebSocket
+uses the `idx-auth-<token>` subprotocol. Avoid logging protocol headers in
+a reverse proxy, and rotate leaked tokens.
+
+Example for a **private, TLS-protected deployment**, with a separately
+hosted static frontend:
+
+```bash
+export HOST=0.0.0.0
+export PORT=3001
+export API_TOKEN="$(openssl rand -hex 32)"
+export CORS_ORIGIN="https://stocks.example.com"
+node api-server.js
+```
+
+Configure frontend `VITE_API_URL` to point to your HTTPS API endpoint when
+building. **Do not serve this directly over the public internet without HTTPS,
+reverse-proxy controls, firewalls, request-rate controls, and access logging
+that redacts credentials.** This single-user token is not a multi-tenant identity
+system; hosting it for unrelated users requires a dedicated auth service and
+per-user data permissions. The local `public/data/` directory is read-only
+market data but can also be served by Vite; do not store secrets there.
+
+The backend permits at most **three concurrent Python downloader jobs**
+and caps output and runtime. When the capacity is exhausted, requests return
+an error rather than launching unbounded processes. Operational diagnostics
+are available at authenticated `GET /api/health`.
+
 ## Limitations and next improvements
 
 - **2026 IDX holiday calendar:** the application uses published weekday exchange closures from IDX's Peng-00171/BEI.POP/09-2025 (see `config/idx-market-calendar.json`). The calendar includes 22 announced weekday closures and must be updated when the exchange publishes changes. Outside verified years, the API marks `calendarVerified: false` and applies a provisional weekdays-only schedule. Auctions are not modeled.
