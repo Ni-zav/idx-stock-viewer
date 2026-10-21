@@ -192,10 +192,8 @@ def update_ticker_file(ticker: str, new_rows: list[dict]):
 
 
 def update_main_csv(new_rows: list[dict]):
-    """Append new rows to main idx.csv"""
-    with open(CSV_PATH, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume'])
-        writer.writerows(new_rows)
+    """Deduplicate and persist the combined archival CSV, including revisions."""
+    return upsert_market_csv(CSV_PATH, new_rows)
 
 
 def update_ticker(ticker: str) -> dict:
@@ -251,15 +249,17 @@ def update_ticker(ticker: str) -> dict:
         "last_date": new_last_date
     }
 
-def update_batch_tickers(tickers: list[str]) -> list[dict]:
+def update_batch_tickers(tickers: list[str], reconcile_days: int = 0) -> list[dict]:
     """Update multiple tickers using batch download (Concurrent/Optimized)"""
     results = []
     tickers_to_fetch = []
     ticker_last_dates = {} # Map ticker -> last_date
     
-    today = datetime.now(JAKARTA)
+    # Compare like-for-like timezone-naive date objects (all interpreted as WIB).
+    today = datetime.now(JAKARTA).replace(tzinfo=None)
     today_str = today.strftime('%Y-%m-%d')
-    
+    end_exclusive = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+
     # Calculate last trading day
     last_trading_day_str = get_last_trading_day()
     
@@ -276,7 +276,12 @@ def update_batch_tickers(tickers: list[str]) -> list[dict]:
         start_date_obj = None
         
         if last_date:
-            if last_date < last_trading_day_str:
+            if reconcile_days:
+                # Include the last few days to capture provider corrections and
+                # newly revised adjusted-close factors after corporate actions.
+                needs_update = True
+                start_date_obj = datetime.strptime(last_date, '%Y-%m-%d') - timedelta(days=reconcile_days)
+            elif last_date < last_trading_day_str:
                 needs_update = True
                 start_date_obj = datetime.strptime(last_date, '%Y-%m-%d') + timedelta(days=1)
         else:
@@ -317,7 +322,7 @@ def update_batch_tickers(tickers: list[str]) -> list[dict]:
                 # auto_adjust=True default in future, we set False to keep raw OHLC. Or True? 
                 # Existing code used scrape_ticker_data default (yfinance defaults have changed over time).
                 # To be consistent with recent yfinance warnings: set auto_adjust=False
-                data = yf.download(chunk_str, start=start_date_str, end=today_str, group_by='ticker', progress=False, auto_adjust=False, threads=True)
+                data = yf.download(chunk_str, start=start_date_str, end=end_exclusive, group_by='ticker', progress=False, auto_adjust=False, threads=True)
             finally:
                 sys.stdout = original_stdout
 
@@ -349,14 +354,21 @@ def update_batch_tickers(tickers: list[str]) -> list[dict]:
                         results.append({"ticker": ticker, "status": "no_new_data", "last_date": ticker_last_dates.get(ticker)})
                         continue
                         
-                    # Filter dates > ticker's last_date
+                    # A reconcile fetch keeps rows spanning the lookback
+                    # interval so the atomic upsert can apply price revisions.
                     t_last_date = ticker_last_dates.get(ticker)
                     if t_last_date:
-                        t_last_ts = pd.Timestamp(t_last_date)
-                        # Ensure t_df index is datetime
                         if not isinstance(t_df.index, pd.DatetimeIndex):
                             t_df.index = pd.to_datetime(t_df.index)
-                        t_df = t_df[t_df.index > t_last_ts]
+                        local_idx = t_df.index
+                        if local_idx.tz is not None:
+                            local_idx = local_idx.tz_convert('Asia/Jakarta')
+                        cutoff = pd.Timestamp(t_last_date)
+                        if reconcile_days:
+                            cutoff -= pd.Timedelta(days=reconcile_days)
+                            t_df = t_df[local_idx.date >= cutoff.date()]
+                        else:
+                            t_df = t_df[local_idx.date > cutoff.date()]
 
                     if t_df.empty:
                         results.append({"ticker": ticker, "status": "no_new_data", "last_date": t_last_date})
@@ -420,7 +432,11 @@ def main():
     parser.add_argument('ticker', nargs='?', help='Specific ticker to update (optional)')
     parser.add_argument('--check', action='store_true', help='Only check status, do not update')
     parser.add_argument('--json', action='store_true', help='Output as JSON')
+    parser.add_argument('--reconcile-days', type=int, default=0,
+                        help='Re-fetch up to N previous calendar days to capture Yahoo price corrections (0-365)')
     args = parser.parse_args()
+    if not 0 <= args.reconcile_days <= 365:
+        parser.error('--reconcile-days must be between 0 and 365')
     
     if args.check:
         # Check status only
@@ -453,7 +469,7 @@ def main():
     print(f"Updating {len(tickers)} ticker(s)...", file=sys.stderr)
     
     # Use BATCH Update logic
-    results = update_batch_tickers(tickers)
+    results = update_batch_tickers(tickers, reconcile_days=args.reconcile_days)
     
     # Summary
     updated = [r for r in results if r['status'] == 'updated']

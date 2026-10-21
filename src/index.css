@@ -1590,3 +1590,15 @@ body {
 }
 .indicator-controls label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; color: #ccc; }
 .indicator-controls input { accent-color: #ffbd00; }
+
+.price-mode-control {
+  display: inline-flex; align-items: center; gap: 7px;
+  color: #9b9b9b; font-size: 11px; white-space: nowrap;
+}
+.corporate-actions {
+  padding: 6px 12px; background: #111; color: #bfbfbf;
+  border-bottom: 1px solid #333; font-size: 10px;
+  max-height: 105px; overflow-y: auto; flex-shrink: 0;
+}
+.corporate-actions summary { color: #ffbd00; cursor: pointer; }
+.corporate-actions div { padding: 2px 0; }

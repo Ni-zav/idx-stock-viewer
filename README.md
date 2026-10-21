@@ -43,6 +43,30 @@ Polling uses regular IDX continuous-trading sessions in the **Asia/Jakarta** tim
 
 Additional documentation: [Features](documentation/features.md), [Architecture](documentation/architecture.md), [API](documentation/api.md), [Scripts](documentation/scripts.md).
 
+
+## Corporate actions and adjusted prices
+
+The chart offers two **explicitly labeled** daily history modes:
+- **Yahoo Close (provider):** the OHLC data as returned by yfinance with `auto_adjust=False`. Yahoo may already adjust for some splits.
+- **Yahoo Adj Close (daily+):** each historical OHLC is multiplied by that date's `Adj Close / Close` factor. Share volume remains unchanged. **This is not an independently audited corporate-action adjustment or a total-return index.** Intraday views always use provider OHLC.
+
+To retrieve the source's declared dividend/split events (optional):
+
+```bash
+python scripts/sync_corporate_actions.py --tickers BBCA BBRI
+```
+
+The chart shows a collapsible event list if `public/data/actions/TICKER.json` exists. Every event is flagged as Yahoo-sourced and **not exchange-verified**. Event amounts depend on Yahoo's conventions; check official issuer and IDX disclosures before relying on them.
+
+Yahoo's `end` parameter is exclusive. The batch downloader now requests **tomorrow's** date to include today's Jakarta trading date. To reconcile historical revisions after dividend/split changes:
+
+```bash
+python update_data.py --reconcile-days 30
+python generate_dashboard.py
+```
+
+This reconciliation is bounded (0–365 days) and does **not** promise complete historical corporate-action accuracy. Source adjusted factors can change retroactively.
+
 ## Limitations and next improvements
 
 - **2026 IDX holiday calendar:** the application uses published weekday exchange closures from IDX's Peng-00171/BEI.POP/09-2025 (see `config/idx-market-calendar.json`). The calendar includes 22 announced weekday closures and must be updated when the exchange publishes changes. Outside verified years, the API marks `calendarVerified: false` and applies a provisional weekdays-only schedule. Auctions are not modeled.
