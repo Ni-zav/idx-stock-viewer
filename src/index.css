@@ -1602,3 +1602,19 @@ body {
 }
 .corporate-actions summary { color: #ffbd00; cursor: pointer; }
 .corporate-actions div { padding: 2px 0; }
+
+.api-access {
+  flex-shrink: 0; background: #121212; color: #a7a7a7;
+  border-bottom: 1px solid #333; padding: 3px 12px;
+  font: 10px var(--font-mono);
+}
+.api-access summary { cursor: pointer; color: #ffbd00; user-select: none; }
+.api-access form { padding: 8px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+.api-access input {
+  background: #000; border: 1px solid #444; color: #fff;
+  padding: 6px 8px; font: 12px var(--font-mono);
+}
+.api-access button { background: #222; border: 1px solid #555; color: #ffbd00; padding: 6px 9px; cursor: pointer; }
+.api-access input:focus-visible, .api-access button:focus-visible, .api-access summary:focus-visible {
+  outline: 2px solid #ffbd00; outline-offset: 2px;
+}
