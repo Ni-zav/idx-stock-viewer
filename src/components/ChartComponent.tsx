@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useCallback } from 'react'
-import { createChart, ColorType, IChartApi, CandlestickSeries, IPriceLine } from 'lightweight-charts'
+import { createChart, ColorType, IChartApi, ISeriesApi, IPriceLine, UTCTimestamp, CandlestickData, HistogramData } from 'lightweight-charts'
 import { CandleData, VolumeData } from '../types'
 
 interface LivePriceUpdate {
@@ -18,7 +18,7 @@ interface ChartComponentProps {
 export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volumeData, showGaps = false, livePrice }) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<CandlestickSeries<'Candlestick'> | null>(null)
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const volumeSeriesRef = useRef<any>(null)
   const volumePriceLineRef = useRef<IPriceLine | null>(null) // Track volume crosshair marker
   const tooltipRef = useRef<HTMLDivElement>(null)
@@ -229,13 +229,13 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     const isNewTicker = Math.abs(candleData.length - prevDataLengthRef.current) > 100 || prevDataLengthRef.current === 0
     prevDataLengthRef.current = candleData.length
 
-    seriesRef.current.setData(candleData)
+    seriesRef.current.setData(candleData as CandlestickData<UTCTimestamp>[])
     
     // Store last candle for live updates
     lastCandleRef.current = candleData[candleData.length - 1]
 
     if (volumeSeriesRef.current && volumeData.length > 0) {
-      volumeSeriesRef.current.setData(volumeData)
+      volumeSeriesRef.current.setData(volumeData as HistogramData<UTCTimestamp>[])
     }
 
     if (isNewTicker) {
@@ -243,7 +243,7 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
       if (candleData.length > 100) {
         const fromTime = candleData[candleData.length - 100].time
         const toTime = candleData[candleData.length - 1].time
-        timeScale.setVisibleRange({ from: fromTime, to: toTime })
+        timeScale.setVisibleRange({ from: fromTime as UTCTimestamp, to: toTime as UTCTimestamp })
       } else {
         timeScale.fitContent()
       }
@@ -266,7 +266,7 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     }
     
     // Use update() for smooth real-time updates without full redraw
-    seriesRef.current.update(updatedCandle)
+    seriesRef.current.update(updatedCandle as CandlestickData<UTCTimestamp>)
   }, [livePrice])
 
   // Update timeScale when showGaps changes
