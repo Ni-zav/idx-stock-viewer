@@ -3,7 +3,8 @@ import os
 import glob
 import pandas as pd
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from market_data import valid_market_row
 
 DATA_DIR = 'public/data/tickers'
 INTRADAY_DIR = 'public/data/intraday/1m'
@@ -43,7 +44,10 @@ def get_intraday_data(ticker, daily_last_date_str):
                last_date_str = parts[0] # assuming Date is first col
                
                # If intraday date is definitely OLDER than daily date, skip pandas load
-               if last_date_str[:10] < daily_last_date_str[:10]:
+               # CSV timestamps are UTC. Convert to the local IDX date
+               # before comparing them with daily exchange-date candles.
+               last_local_date = pd.to_datetime(last_date_str, utc=True).tz_convert('Asia/Jakarta').strftime('%Y-%m-%d')
+               if last_local_date < daily_last_date_str[:10]:
                    return None
         except Exception:
             pass
@@ -53,20 +57,27 @@ def get_intraday_data(ticker, daily_last_date_str):
         if len(df) == 0: return None
         
         # Ensure Date is datetime
-        df['Date'] = pd.to_datetime(df['Date'])
+        # Stored intraday records are UTC; use Jakarta's trading date for
+        # comparisons and daily volume totals, not the machine's UTC date.
+        df['Date'] = pd.to_datetime(df['Date'], utc=True, errors='coerce')
+        df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+        df['Volume'] = pd.to_numeric(df['Volume'], errors='coerce')
+        df = df.dropna(subset=['Date', 'Close']).sort_values('Date')
+        df = df[(df['Close'] > 0) & (df['Volume'] >= 0)]
+        if df.empty: return None
         last_row = df.iloc[-1]
-        last_date = last_row['Date']
+        observed_at = last_row['Date']
+        last_date = observed_at.tz_convert('Asia/Jakarta')
         last_price = float(last_row['Close'])
-        
-        # Calculate volume for the "current day" in the intraday file
-        # Filter for rows with same date as last_row
-        today_mask = df['Date'].dt.date == last_date.date()
-        today_vol = df.loc[today_mask, 'Volume'].sum()
+
+        jakarta_dates = df['Date'].dt.tz_convert('Asia/Jakarta').dt.date
+        today_vol = df.loc[jakarta_dates == last_date.date(), 'Volume'].sum()
         
         return {
             'price': last_price,
             'volume': int(today_vol),
-            'date': last_date
+            'date': last_date,
+            'observed_at': observed_at.isoformat().replace('+00:00', 'Z')
         }
 
     except Exception as e:
@@ -90,9 +101,19 @@ def generate_dashboard_data():
             except Exception:
                 continue
             
+            # Never calculate changes from out-of-order, duplicated or
+            # malformed candles (a corrupt row can distort all statistics).
+            df = df.drop_duplicates(subset=['Date'], keep='last').sort_values('Date')
+            df = df[df.apply(lambda row: valid_market_row({
+                'Date': str(row['Date']), 'Ticker': ticker,
+                'Open': row.get('Open'), 'High': row.get('High'),
+                'Low': row.get('Low'), 'Close': row.get('Close'),
+                'Adj Close': row.get('Adj Close', row.get('Close')),
+                'Volume': row.get('Volume')
+            }), axis=1)]
             if len(df) < 2:
                 continue
-                
+
             last_row = df.iloc[-1]
             last_date_val = last_row['Date']
             last_date_str = str(last_date_val)
@@ -100,6 +121,9 @@ def generate_dashboard_data():
             # Base data from Daily
             current_price = float(last_row['Close'])
             current_volume = int(last_row['Volume']) if 'Volume' in df else 0
+            quote_source = 'yahoo-daily'
+            quote_date = last_date_str[:10]
+            observed_at = None
             
             # Check for Intraday update
             intra = get_intraday_data(ticker, last_date_str)
@@ -116,6 +140,9 @@ def generate_dashboard_data():
                     using_intraday = True
                     current_price = intra['price']
                     current_volume = intra['volume']
+                    quote_source = 'yahoo-intraday-1m'
+                    quote_date = intra_dt.strftime('%Y-%m-%d')
+                    observed_at = intra['observed_at']
                     # Previous close is the Last Daily Close (which is yesterday relative to intraday)
                     prev_close = float(last_row['Close'])
                     
@@ -123,6 +150,9 @@ def generate_dashboard_data():
                 elif intra_dt.date() == daily_dt.date():
                     using_intraday = True
                     current_price = intra['price']
+                    quote_source = 'yahoo-intraday-1m'
+                    quote_date = intra_dt.strftime('%Y-%m-%d')
+                    observed_at = intra['observed_at']
                     if intra['volume'] > current_volume:
                         current_volume = intra['volume']
                     # Prev close remains defaults (daily[-2])
@@ -192,7 +222,11 @@ def generate_dashboard_data():
                 'ca': round(chg_all, 2),
                 'pa': round(diff_all, 2),
                 'sl': sparkline,
-                'v': int(current_volume)
+                'v': int(current_volume),
+                # Null for daily-only prices (no valid intraday event time).
+                'observedAt': observed_at,
+                'asOfDate': quote_date,
+                'source': quote_source,
             })
             
         except Exception as e:
@@ -202,6 +236,7 @@ def generate_dashboard_data():
     # Sort by 1 day change descending
     data.sort(key=lambda x: x['c1d'], reverse=True)
     
+    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
     with open(OUTPUT_FILE, 'w') as f:
         json.dump(data, f)
         

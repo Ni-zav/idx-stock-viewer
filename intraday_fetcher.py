@@ -18,6 +18,7 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
+from market_data import upsert_market_csv, valid_market_row
 import time
 
 # Handle encoding for Windows
@@ -317,51 +318,20 @@ def fetch_batch_intraday(tickers: list[str], interval: str = '1m') -> dict[str, 
 
 
 def update_intraday_file(ticker: str, interval: str, new_data: pd.DataFrame) -> int:
-    """
-    Update the intraday CSV file with new data, avoiding duplicates.
+    """Atomically upsert valid candles, including revised in-progress candles.
+
+    A provider can revise the same timestamp without adding a new row;
+    those changes must be persisted rather than ignored.
     """
     file_path = get_ticker_file(ticker, interval)
-    
-    if file_path.exists():
-        try:
-            existing = pd.read_csv(file_path)
-            
-            # Optimization: If new_data max date <= existing max date, probably nothing to update?
-            # But duplicate check handles it.
-            
-            # Combine and remove duplicates based on Date
-            # Converting to datetime objects for accurate comparison/sorting
-            
-            # Only append data that is newer or missing?
-            # Creating a set of existing dates is faster than concat for large files
-            # But for intraday (small), concat is fine.
-            
-            combined = pd.concat([existing, new_data], ignore_index=True)
-            combined = combined.drop_duplicates(subset=['Date'], keep='last')
-            
-            # Sort by date
-            combined['_sort_date'] = pd.to_datetime(combined['Date'])
-            combined = combined.sort_values('_sort_date')
-            combined = combined.drop('_sort_date', axis=1)
-            
-            new_rows = len(combined) - len(existing)
-        except Exception as e:
-            print(f"[ERROR] Corrupt file {file_path}, overwriting: {e}", file=sys.stderr)
-            combined = new_data
-            new_rows = len(new_data)
-    else:
-        combined = new_data
-        new_rows = len(new_data)
-    
-    # Save to file if changed or new
-    if new_rows > 0 or not file_path.exists():
-        combined.to_csv(file_path, index=False)
-        # print(f"[INFO] Saved {len(combined)} rows to {file_path} (+{new_rows} new)", file=sys.stderr)
-    else:
-        # print(f"[INFO] No new data for {ticker}", file=sys.stderr)
-        pass # Silence "no new data" to reduce spam on stream
-    
-    return new_rows
+    valid_rows = [
+        row for row in new_data.to_dict(orient='records')
+        if valid_market_row(row)
+    ]
+    new_count, revised_count = upsert_market_csv(file_path, valid_rows)
+    if revised_count:
+        print(f"[INFO] {ticker} {interval}: corrected {revised_count} existing candles", file=sys.stderr)
+    return new_count
 
 
 def get_all_tickers() -> list[str]:

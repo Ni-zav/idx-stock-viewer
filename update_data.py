@@ -20,6 +20,7 @@ import sys
 import json
 import argparse
 import logging
+from market_data import upsert_market_csv
 
 # Fix encoding for Windows
 if sys.platform == 'win32':
@@ -197,20 +198,9 @@ def format_data_for_csv(ticker: str, df: pd.DataFrame) -> list[dict]:
 
 
 def update_ticker_file(ticker: str, new_rows: list[dict]):
-    """Append new rows to individual ticker file"""
+    """Merge per-ticker history safely; reject invalid provider candles."""
     ticker_file = TICKERS_DIR / f"{ticker}.csv"
-    
-    if not ticker_file.exists():
-        # Create new file with header
-        with open(ticker_file, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume'])
-            writer.writeheader()
-            writer.writerows(new_rows)
-    else:
-        # Append to existing file
-        with open(ticker_file, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=['Date', 'Ticker', 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume'])
-            writer.writerows(new_rows)
+    return upsert_market_csv(ticker_file, new_rows)
 
 
 def update_main_csv(new_rows: list[dict]):
