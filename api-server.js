@@ -13,6 +13,7 @@ import { WebSocketServer } from 'ws';
 import fs from 'fs';
 import { getMarketState, getAdaptiveInterval as getMarketPollingInterval } from './lib/market-hours.js';
 import { normalizeTicker, normalizeTickers, normalizeInterval } from './lib/tickers.js';
+import { parseMarketTimestamp, jakartaTradingDate } from './lib/market-data.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -129,7 +130,7 @@ async function getLastPrice(ticker) {
           
           const lastDateStr = lastVals[dateIdx];
           // Use Jakarta time for "today" to match IDX market time
-          const todayStr = new Date().toLocaleString('en-CA', { timeZone: 'Asia/Jakarta' }).split(',')[0];
+          const todayStr = jakartaTradingDate();
           
           // If daily has today's date, then prevClose is the one before it
           if (lastDateStr.startsWith(todayStr)) {
@@ -181,7 +182,7 @@ async function getLastPrice(ticker) {
       // Parse date to timestamp for comparison
       // Intraday format often: YYYY-MM-DD HH:MM:SS or similar
       // Daily format: YYYY-MM-DD
-      const timestamp = new Date(dateStr).getTime();
+      const timestamp = parseMarketTimestamp(dateStr);
       
       if (isNaN(timestamp)) continue;
 
