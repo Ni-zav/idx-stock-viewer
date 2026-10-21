@@ -8,6 +8,7 @@ import { Header } from './Header'
 import { Dashboard, LivePriceData } from './Dashboard'
 import { HelpModal } from './HelpModal'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { adjustOhlcv } from '../../lib/adjusted-prices.js'
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || `${window.location.protocol}//${window.location.hostname}:3001`
 const WS_URL = `${API_URL.replace(/^http/, 'ws')}/ws/stream`
@@ -32,6 +33,11 @@ export const App: React.FC = () => {
   const [timeframe, setTimeframe] = useState<TimeframeType>('1D')
   const [customDays, setCustomDays] = useState<number>(7)
   const [showGaps, setShowGaps] = useState(false) // Toggle for non-trading time gaps
+  const [priceMode, setPriceMode] = useState<'provider' | 'adjusted'>('provider')
+  const adjustedMode = priceMode === 'adjusted' && ['1D', '1W', '1M', '1Y', 'custom'].includes(timeframe)
+  const [corporateActions, setCorporateActions] = useState<{
+    fetchedAt: string; events: {date:string; type:'dividend'|'split'; value:number}[]
+  } | null>(null)
 
   // Update state
   const [updateStatus, setUpdateStatus] = useState<'idle' | 'updating' | 'completed' | 'error'>('idle')
@@ -351,6 +357,22 @@ export const App: React.FC = () => {
     fetchTickersList()
   }, [])
 
+  // Provider-sourced corporate actions are optional. Data is never inferred
+  // from chart jumps and is not represented as exchange-verified.
+  useEffect(() => {
+    if (!selectedTicker) return
+    const controller = new AbortController()
+    setCorporateActions(null)
+    fetch(`/data/actions/${selectedTicker}.json`, {signal: controller.signal})
+      .then(response => response.ok ? response.json() : null)
+      .then(result => {
+        if (!controller.signal.aborted && result && Array.isArray(result.events)) {
+          setCorporateActions(result)
+        }
+      }).catch(() => { /* corporate action metadata is optional */ })
+    return () => controller.abort()
+  }, [selectedTicker])
+
   // Phase 2: Load the selected ticker's data from its individual file
   // Helper to get data source path based on timeframe
   const getDataSourcePath = useCallback((tf: TimeframeType, ticker: string): string => {
@@ -668,12 +690,23 @@ export const App: React.FC = () => {
     return data
   }, [rawData, livePrices, selectedTicker, timeframe])
 
+  // Adj Close uses Yahoo's vendor factor, not an independently verified
+  // split/dividend history. Intraday data is deliberately provider-only.
+  const adjustedChart = useMemo(() => {
+    if (!adjustedMode) return { rows: effectiveRawData, error: '' }
+    try {
+      return { rows: adjustOhlcv(rawData), error: '' }
+    } catch {
+      return { rows: [] as ChartData[], error: 'Adjusted Close is missing or invalid for this history.' }
+    }
+  }, [adjustedMode, effectiveRawData, rawData])
+
   // Convert to chart format and optionally fill gaps
   const { candleData, volumeData } = useMemo(() => {
     // Use effectiveRawData for visual chart updates too if desired, 
     // but ChartComponent handles livePrice prop separately for smoother animation.
     // However, feeding it here ensures full consistency.
-    const aggregated = aggregateByTimeframe(effectiveRawData, timeframe, customDays)
+    const aggregated = aggregateByTimeframe(adjustedChart.rows, timeframe, customDays)
     
     let candles = convertToCandleData(aggregated)
     let volumes = convertToVolumeData(aggregated)
@@ -697,17 +730,25 @@ export const App: React.FC = () => {
     }
     
     return { candleData: candles, volumeData: volumes }
-  }, [effectiveRawData, showGaps, timeframe, customDays])
+  }, [adjustedChart.rows, showGaps, timeframe, customDays])
   
   // Calculate stats using COMPREHENSIVE data (daily + intraday for all periods)
   // This ensures sidebar always shows all periods regardless of chart timeframe
   const stats = useMemo(() => {
     // If we have sidebar daily data, use comprehensive stats
     if (sidebarDailyData.length > 0) {
+      if (adjustedMode) {
+        try {
+          // Daily adjusted history cannot be mixed with raw intraday stats.
+          return calculateStats(adjustOhlcv(sidebarDailyData))
+        } catch {
+          return null
+        }
+      }
       // Apply live price to daily data for current price
       const dailyWithLive = [...sidebarDailyData]
       const live = selectedTicker ? livePrices[selectedTicker] : null
-      if (live && dailyWithLive.length > 0) {
+      if (live && live.freshness !== 'stale' && dailyWithLive.length > 0) {
         const lastCandle = dailyWithLive[dailyWithLive.length - 1]
         dailyWithLive[dailyWithLive.length - 1] = {
           ...lastCandle,
@@ -720,7 +761,7 @@ export const App: React.FC = () => {
     }
     // Fallback to basic stats from chart data
     return calculateStats(effectiveRawData)
-  }, [sidebarDailyData, sidebarIntradayData, effectiveRawData, selectedTicker, livePrices])
+  }, [sidebarDailyData, sidebarIntradayData, effectiveRawData, selectedTicker, livePrices, adjustedMode])
 
   // Handle streaming toggle
   const handleStreamingToggle = useCallback(async (enabled: boolean) => {
@@ -883,6 +924,15 @@ export const App: React.FC = () => {
             )}
           </div>
 
+          <label className="price-mode-control">
+            Price history
+            <select className="select-input" value={priceMode}
+              onChange={event => setPriceMode(event.target.value as 'provider'|'adjusted')}>
+              <option value="provider">Yahoo Close (provider)</option>
+              <option value="adjusted">Yahoo Adj Close (daily+)</option>
+            </select>
+          </label>
+
           {/* Gap Toggle */}
           <button
             className={`nav-btn btn-terminal gap-toggle ${showGaps ? 'active' : ''}`}
@@ -921,9 +971,24 @@ export const App: React.FC = () => {
                   {' · '}Provider may be delayed; not exchange-licensed real-time
                 </div>
               )}
+              {adjustedMode && (
+                <div className="quote-observation">
+                  Adjusted OHLC is scaled by Yahoo Adj Close / Close; volumes stay unadjusted.
+                  This is not a total-return index or a verified split-adjustment history.
+                </div>
+              )}
+              {corporateActions && (
+                <details className="corporate-actions">
+                  <summary>Yahoo corporate actions ({corporateActions.events.length}) · unverified</summary>
+                  <div>Retrieved: {corporateActions.fetchedAt}</div>
+                  {corporateActions.events.slice(-10).map((event, i) => (
+                    <div key={i}>{event.date} · {event.type} · {event.value}</div>
+                  ))}
+                </details>
+              )}
               <div className={`chart-wrapper ${dataLoading ? 'loading' : ''}`}>
-                {error ? (
-                  <div className="error">{error}</div>
+                {error || adjustedChart.error ? (
+                  <div className="error">{error || adjustedChart.error}</div>
                 ) : loading || (!selectedTicker) ? (
                   <div className="loading">
                     {loading ? 'Loading tickers...' : 'Select a ticker'}
@@ -937,7 +1002,7 @@ export const App: React.FC = () => {
                     candleData={candleData} 
                     volumeData={volumeData} 
                     showGaps={showGaps}
-                    livePrice={selectedTicker && livePrices[selectedTicker] ? {
+                    livePrice={!adjustedMode && selectedTicker && livePrices[selectedTicker] ? {
                       price: livePrices[selectedTicker].price,
                       high: livePrices[selectedTicker].high,
                       low: livePrices[selectedTicker].low,
@@ -955,7 +1020,7 @@ export const App: React.FC = () => {
               onTickerSelect={setSelectedTicker}
               loading={loading}
               onRefresh={fetchTickersList}
-              livePrice={selectedTicker && livePrices[selectedTicker] ? {
+              livePrice={!adjustedMode && selectedTicker && livePrices[selectedTicker] ? {
                 price: livePrices[selectedTicker].price,
                 prevClose: livePrices[selectedTicker].prevClose,
                 open: livePrices[selectedTicker].open,
