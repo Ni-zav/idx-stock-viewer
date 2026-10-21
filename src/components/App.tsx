@@ -8,6 +8,7 @@ import { Header } from './Header'
 import { Dashboard, LivePriceData } from './Dashboard'
 import { HelpModal } from './HelpModal'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { readApiToken, setApiToken, apiFetch } from '../apiAccess'
 import { adjustOhlcv } from '../../lib/adjusted-prices.js'
 
 const API_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/$/, '') || `${window.location.protocol}//${window.location.hostname}:3001`
@@ -52,6 +53,9 @@ export const App: React.FC = () => {
 
   // Streaming state
   const [streamingEnabled, setStreamingEnabled] = useState(false)
+  const [apiToken, setCurrentApiToken] = useState(() => readApiToken())
+  const [apiTokenDraft, setApiTokenDraft] = useState('')
+  const [apiTokenError, setApiTokenError] = useState('')
 
   // Track currently visible tickers on dashboard
   const [visibleTickers, setVisibleTickers] = useState<string[]>([])
@@ -88,14 +92,15 @@ export const App: React.FC = () => {
   // WebSocket connection
   const { connected: wsConnected, lastMessage, subscribe, unsubscribe } = useWebSocket({
     url: WS_URL,
-    autoConnect: streamingEnabled
+    autoConnect: streamingEnabled,
+    token: apiToken
   })
 
   // Fetch initial prices on mount to get latest buffered data
   useEffect(() => {
     const fetchInitialPrices = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/prices`);
+        const res = await apiFetch(`${API_URL}/api/prices`);
         if (res.ok) {
           const json = await res.json();
           if (json.prices) {
@@ -505,7 +510,7 @@ export const App: React.FC = () => {
 
     try {
       // Check if ticker needs update
-      const checkRes = await fetch(`${API_URL}/api/smart-check/${ticker}`)
+      const checkRes = await apiFetch(`${API_URL}/api/smart-check/${ticker}`)
       if (!checkRes.ok) return
 
       const checkData = await checkRes.json()
@@ -515,7 +520,7 @@ export const App: React.FC = () => {
         console.log(`${ticker} needs update (last: ${checkData.last_date}), updating...`)
         setAutoUpdateInProgress(true)
         
-        const updateRes = await fetch(`${API_URL}/api/smart-update`, {
+        const updateRes = await apiFetch(`${API_URL}/api/smart-update`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -534,7 +539,7 @@ export const App: React.FC = () => {
               return
             }
             
-            const progressRes = await fetch(`${API_URL}/api/update/progress`)
+            const progressRes = await apiFetch(`${API_URL}/api/update/progress`)
             const progress = await progressRes.json()
 
             if (progress.status === 'completed') {
@@ -581,7 +586,7 @@ export const App: React.FC = () => {
     setUpdateMessage('Connecting...')
 
     try {
-      const response = await fetch(`${API_URL}/api/update`, {
+      const response = await apiFetch(`${API_URL}/api/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
@@ -595,7 +600,7 @@ export const App: React.FC = () => {
       const maxAttempts = 600
 
       const pollProgress = async () => {
-        const progressRes = await fetch(`${API_URL}/api/update/progress`)
+        const progressRes = await apiFetch(`${API_URL}/api/update/progress`)
         const progress = await progressRes.json()
 
         if (progress.status === 'completed') {
@@ -773,7 +778,7 @@ export const App: React.FC = () => {
         const initTickers = visibleTickers.length > 0 ? visibleTickers : tickers.slice(0, 50);
         
         // Start real-time streaming (WebSocket price updates)
-        await fetch(`${API_URL}/api/streaming/start`, {
+        await apiFetch(`${API_URL}/api/streaming/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tickers: initTickers, intervalMs: 10000 })
@@ -786,7 +791,7 @@ export const App: React.FC = () => {
         }
       } else {
         // Stop streaming
-        await fetch(`${API_URL}/api/streaming/stop`, { method: 'POST' })
+        await apiFetch(`${API_URL}/api/streaming/stop`, { method: 'POST' })
         console.log('[STREAM] Stopped streaming')
       }
     } catch (e) {
@@ -828,7 +833,29 @@ export const App: React.FC = () => {
         onAddTickerModalChange={setShowAddTickerModal}
         onHelpClick={() => setShowHelpModal(true)}
       />
-      
+      <details className="api-access">
+        <summary>API ACCESS {apiToken ? '● configured' : '○ local mode'}</summary>
+        <form onSubmit={(event) => {
+          event.preventDefault()
+          try {
+            const next = apiTokenDraft.trim()
+            setApiToken(next)
+            setCurrentApiToken(next)
+            setApiTokenError('')
+            setApiTokenDraft('')
+          } catch (error) {
+            setApiTokenError(error instanceof Error ? error.message : 'Invalid token')
+          }
+        }}>
+          <label htmlFor="api-access-token">API access token (only this browser session)</label>
+          <input id="api-access-token" type="password" autoComplete="off" value={apiTokenDraft}
+            onChange={event => setApiTokenDraft(event.target.value)}
+            placeholder="Paste API_TOKEN or leave blank to clear" />
+          <button type="submit">Save / Clear</button>
+          {apiTokenError && <span role="alert">{apiTokenError}</span>}
+        </form>
+      </details>
+
       {currentView === 'chart' && (
       <div className="toolbar">
         <div className="dropdown-group">
