@@ -635,9 +635,12 @@ app.get('/api/streaming/status', (req, res) => {
 app.get('/api/prices', (req, res) => {
   const { tickers } = req.query;
   
-  if (tickers) {
-    // Return specific tickers
-    const tickerList = tickers.split(',').map(t => t.trim().toUpperCase());
+  if (tickers !== undefined) {
+    if (typeof tickers !== 'string') {
+      return res.status(400).json({ error: 'Invalid tickers query' });
+    }
+    const tickerList = normalizeTickers(tickers.split(','));
+    if (tickerList === null) return res.status(400).json({ error: 'Invalid IDX tickers' });
     const prices = {};
     for (const ticker of tickerList) {
       const cached = priceCache.get(ticker);
@@ -795,6 +798,9 @@ app.post('/api/data/cleanup', async (req, res) => {
 app.get('/api/status', async (req, res) => {
   try {
     const ticker = req.query.ticker;
+    if (ticker !== undefined && normalizeTicker(ticker) === null) {
+      return res.status(400).json({ error: 'Invalid IDX ticker' });
+    }
     const args = ['--check', '--json'];
     if (ticker) args.unshift(ticker);
 
@@ -816,8 +822,11 @@ app.post('/api/update', async (req, res) => {
     });
   }
 
-  const { ticker } = req.body;
-  
+  const { ticker } = req.body ?? {};
+  if (ticker !== undefined && normalizeTicker(ticker) === null) {
+    return res.status(400).json({ error: 'Invalid IDX ticker' });
+  }
+
   updateInProgress = true;
   updateOutput = [];
   updateStatus = 'running';
