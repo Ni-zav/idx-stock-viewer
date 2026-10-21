@@ -125,6 +125,8 @@ export const App: React.FC = () => {
               direction: priceData.direction || 'neutral',
               source: priceData.source || 'unknown',
               timestamp: priceData.timestamp || Date.now(),
+              freshness: priceData.freshness || 'stale',
+              observationAgeSeconds: priceData.observationAgeSeconds ?? null,
             };
           }
           return updated;
@@ -147,6 +149,8 @@ export const App: React.FC = () => {
             direction: lastMessage.direction || 'neutral',
             source: lastMessage.source || 'unknown',
             timestamp: lastMessage.timestamp || Date.now(),
+            freshness: (lastMessage as LivePriceData).freshness || 'stale',
+            observationAgeSeconds: (lastMessage as LivePriceData).observationAgeSeconds ?? null,
           }
         }))
       }
@@ -610,7 +614,7 @@ export const App: React.FC = () => {
     if (rawData.length === 0 || !selectedTicker) return rawData
 
     const live = livePrices[selectedTicker]
-    if (!live) return rawData
+    if (!live || live.freshness === 'stale') return rawData
 
     // Check if we need to append or update the last candle
     const data = [...rawData]
@@ -913,7 +917,8 @@ export const App: React.FC = () => {
                     timeZone: 'Asia/Jakarta', dateStyle: 'medium', timeStyle: 'medium'
                   }).format(new Date(livePrices[selectedTicker].timestamp))} WIB
                   {' · '}Source: {livePrices[selectedTicker].source}
-                  {' · '}Not guaranteed real-time
+                  {' · '}Status: {livePrices[selectedTicker].freshness || 'unverified'}
+                  {' · '}Provider may be delayed; not exchange-licensed real-time
                 </div>
               )}
               <div className={`chart-wrapper ${dataLoading ? 'loading' : ''}`}>
