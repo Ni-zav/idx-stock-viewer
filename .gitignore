@@ -10,3 +10,6 @@ __pycache__/
 public/data/
 *.log
 .DS_Store
+
+playwright-report/
+test-results/
