@@ -6,6 +6,7 @@ interface LivePriceUpdate {
   price: number;
   high: number;
   low: number;
+  timestamp?: number;
 }
 
 interface ChartComponentProps {
@@ -255,6 +256,7 @@ export const ChartComponent: React.FC<ChartComponentProps> = ({ candleData, volu
     if (!seriesRef.current || !livePrice || !lastCandleRef.current) return
     
     const lastCandle = lastCandleRef.current
+    if (livePrice.timestamp !== undefined && livePrice.timestamp < lastCandle.time * 1000) return
     
     // Update last candle with live price
     const updatedCandle = {
