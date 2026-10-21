@@ -8,6 +8,7 @@
     "dev": "vite",
     "server": "node api-server.js",
     "build": "tsc && vite build",
+    "test": "node --test tests/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {
