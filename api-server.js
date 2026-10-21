@@ -11,6 +11,7 @@ import { dirname, join } from 'path';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import fs from 'fs';
+import { timingSafeEqual } from 'node:crypto';
 import { getMarketState, getAdaptiveInterval as getMarketPollingInterval } from './lib/market-hours.js';
 import { normalizeTicker, normalizeTickers, normalizeInterval } from './lib/tickers.js';
 import { parseMarketTimestamp, jakartaTradingDate } from './lib/market-data.js';
@@ -22,13 +23,46 @@ const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
-const HOST = process.env.HOST || '127.0.0.1'; // Local-only by default: API can run data-modifying jobs.
+const HOST = process.env.HOST || '127.0.0.1'; // Local-only by default.
+const API_TOKEN = process.env.API_TOKEN || '';
+const loopback = ['127.0.0.1', 'localhost', '::1'].includes(HOST);
+if (API_TOKEN && !/^[A-Za-z0-9_-]{24,128}$/.test(API_TOKEN)) {
+  throw new Error('API_TOKEN must be 24-128 URL-safe alphanumeric characters.');
+}
+if (!loopback && !API_TOKEN) {
+  throw new Error('Remote HOST requires API_TOKEN: unauthenticated writes must not be exposed.');
+}
+function tokenMatches(candidate) {
+  if (!API_TOKEN) return true;
+  if (typeof candidate !== 'string') return false;
+  const received = Buffer.from(candidate);
+  const expected = Buffer.from(API_TOKEN);
+  return received.length === expected.length && timingSafeEqual(received, expected);
+}
+function originAllowed(origin) {
+  return !origin || /^http:\/\/(localhost|127\.0\.0\.1):5173$/.test(origin) ||
+    origin === process.env.CORS_ORIGIN;
+}
+const MAX_PYTHON_JOBS = 3;
+let activePythonJobs = 0;
 
 // Create HTTP server for both Express and WebSocket
 const server = createServer(app);
 
 // WebSocket server
-const wss = new WebSocketServer({ server, path: '/ws/stream', maxPayload: 16 * 1024, perMessageDeflate: false });
+const wss = new WebSocketServer({
+  server, path: '/ws/stream', maxPayload: 16 * 1024,
+  perMessageDeflate: false,
+  verifyClient(info, done) {
+    const origin = info.origin;
+    const protocols = (info.req.headers['sec-websocket-protocol'] || '')
+      .split(',').map(value => value.trim());
+    const authProtocol = protocols.find(value => value.startsWith('idx-auth-'));
+    const token = authProtocol?.slice('idx-auth-'.length);
+    const allowed = originAllowed(origin) && (!API_TOKEN || tokenMatches(token));
+    done(allowed, allowed ? undefined : 401, allowed ? undefined : 'WebSocket unauthorized');
+  }
+});
 
 // Streaming state
 let streamingEnabled = false;
@@ -237,12 +271,24 @@ async function getLastPrice(ticker) {
 // Middleware
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || /^http:\/\/(localhost|127\.0\.0\.1):5173$/.test(origin) ||
-        origin === process.env.CORS_ORIGIN) return callback(null, true);
+    if (originAllowed(origin)) return callback(null, true);
     callback(new Error('Origin not allowed'));
   }
 }));
 app.use(express.json({ limit: '32kb' }));
+
+// Access control includes static CSV/JSON served by the API port.
+// Frontends hosted separately must configure CORS_ORIGIN explicitly.
+app.use((req, res, next) => {
+  if (!API_TOKEN) return next(); // Loopback-only local development.
+  const authorization = req.headers.authorization || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : null;
+  if (!tokenMatches(token)) {
+    res.setHeader('WWW-Authenticate', 'Bearer realm="idx-stock-viewer"');
+    return res.status(401).json({ error: 'API token required' });
+  }
+  next();
+});
 
 // Serve static files from public directory
 app.use(express.static(join(__dirname, 'public')));
@@ -272,6 +318,14 @@ function runScript(scriptName, args = [], options = {}) {
     const MAX_STDOUT_BYTES = 5 * 1024 * 1024;
     let stdoutBytes = 0;
     let stdoutOverflow = false;
+    if (activePythonJobs >= MAX_PYTHON_JOBS) {
+      return reject(new Error('Worker capacity reached; retry after active downloads finish'));
+    }
+    activePythonJobs++;
+    let released = false;
+    const releaseSlot = () => {
+      if (!released) { released = true; activePythonJobs--; }
+    };
     const scriptPath = join(__dirname, scriptName);
     const pythonCmd = process.platform === 'win32' 
       ? join(__dirname, '.venv', 'Scripts', 'python.exe')
@@ -280,7 +334,7 @@ function runScript(scriptName, args = [], options = {}) {
     const python = spawn(pythonCmd, [scriptPath, ...args], {
       cwd: __dirname,
       shell: false,
-      timeout: options.timeoutMs ?? 180000,
+      timeout: options.timeoutMs ?? (options.isStreamingProcess ? 180000 : 1200000),
     });
 
     // Track streaming processes for cleanup
@@ -312,6 +366,7 @@ function runScript(scriptName, args = [], options = {}) {
     });
 
     python.on('close', (code) => {
+      releaseSlot();
       if (updateOutput.length > 1000) updateOutput.splice(0, updateOutput.length - 1000);
       // Remove from tracking set
       if (options.isStreamingProcess) {
@@ -333,6 +388,7 @@ function runScript(scriptName, args = [], options = {}) {
     });
 
     python.on('error', (err) => {
+      releaseSlot();
       if (options.isStreamingProcess) {
         activeStreamingProcesses.delete(python);
       }
@@ -646,6 +702,8 @@ app.get('/api/health', (_req, res) => {
     updateStatus,
     websocketClients: connectedClients.size,
     cachedSymbols: priceCache.size,
+    activePythonJobs,
+    workerCapacity: MAX_PYTHON_JOBS,
     latestObservationAt: latest ? new Date(latest).toISOString() : null,
   });
 });
