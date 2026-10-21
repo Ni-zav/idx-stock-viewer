@@ -1581,3 +1581,12 @@ body {
   .dashboard-stats { width: 100%; gap: 6px; }
   .dashboard-search { min-width: 0; width: min(55vw, 230px); }
 }
+
+.indicator-controls {
+  position: absolute; top: 12px; right: 18px; z-index: 11;
+  display: flex; gap: 12px; align-items: center;
+  background: rgba(7, 7, 7, .9); border: 1px solid #383838;
+  padding: 6px 9px; border-radius: 3px; font: 11px var(--font-mono);
+}
+.indicator-controls label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; color: #ccc; }
+.indicator-controls input { accent-color: #ffbd00; }
